@@ -112,10 +112,7 @@ def read_preprocess_text_file(file_path, mode):
     with open(file_path, 'r', encoding='cp949') as f:
         raw_sentence = f.read()
         file_name = os.path.basename(file_path)
-        if file_name[12:18] in PERCENT_FILES.keys():
-            replace = PERCENT_FILES[file_name[12:18]]
-        else:
-            replace = None
+        replace = PERCENT_FILES.get(file_name[12:18], None)
         return sentence_filter(raw_sentence, mode=mode, replace=replace)
 
 

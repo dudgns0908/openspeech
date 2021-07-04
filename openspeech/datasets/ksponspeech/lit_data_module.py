@@ -102,7 +102,7 @@ class LightningKsponSpeechDataModule(pl.LightningDataModule):
         audio_paths = list()
         transcripts = list()
 
-        with open(self.configs.dataset.manifest_file_path, encoding=self.encoding) as f:
+        with open(self.configs.dataset.manifest_file_path) as f:
             for idx, line in enumerate(f.readlines()):
                 audio_path, korean_transcript, transcript = line.split('\t')
                 transcript = transcript.replace('\n', '')
