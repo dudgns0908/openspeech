@@ -29,9 +29,10 @@ from omegaconf import DictConfig
 from typing import Tuple, Dict
 
 from openspeech.models import OpenspeechModel
+from openspeech.search import BeamSearchRNNTransducer
 from openspeech.modules import Linear
 from openspeech.utils import get_class_name
-from openspeech.vocabs.vocab import Vocabulary
+from openspeech.tokenizers.tokenizer import Tokenizer
 
 
 class OpenspeechTransducerModel(OpenspeechModel):
@@ -40,21 +41,21 @@ class OpenspeechTransducerModel(OpenspeechModel):
 
     Args:
         configs (DictConfig): configuration set.
-        vocab (Vocabulary): the class of vocabulary
+        tokenizer (Tokenizer): tokenizer is in charge of preparing the inputs for a model.
 
     Inputs:
-        - **inputs** (torch.FloatTensor): A input sequence passed to encoders. Typically for inputs this will be
-            a padded `FloatTensor` of size ``(batch, seq_length, dimension)``.
+        - **inputs** (torch.FloatTensor): A input sequence passed to encoders. Typically for inputs this will be a padded `FloatTensor` of size ``(batch, seq_length, dimension)``.
         - **input_lengths** (torch.LongTensor): The length of input tensor. ``(batch)``
 
     Returns:
-        - **y_hats** (torch.FloatTensor): Result of model predictions.
+        dict (dict): Result of model predictions that contains `predictions`, `logits`, `encoder_outputs`, `encoder_output_lengths`
     """
 
-    def __init__(self, configs: DictConfig, vocab: Vocabulary, ) -> None:
-        super(OpenspeechTransducerModel, self).__init__(configs, vocab)
+    def __init__(self, configs: DictConfig, tokenizer: Tokenizer) -> None:
+        super(OpenspeechTransducerModel, self).__init__(configs, tokenizer)
         self.encoder = None
         self.decoder = None
+        self.decode = self.greedy_decode
 
         if hasattr(self.configs.model, "encoder_dim"):
             in_features = self.configs.model.encoder_dim + self.configs.model.decoder_output_dim
@@ -69,8 +70,16 @@ class OpenspeechTransducerModel(OpenspeechModel):
             Linear(in_features=in_features, out_features=self.num_classes),
         )
 
-    def set_beam_decoder(self, beam_size: int = 3):
-        warnings.warn("Currently, Beamsearch has not yet been implemented in the transducer model.")
+    def set_beam_decode(self, beam_size: int = 3, expand_beam: float = 2.3, state_beam: float = 4.6):
+        """ Setting beam search decode """
+        self.decode = BeamSearchRNNTransducer(
+            joint=self.joint,
+            decoder=self.decoder,
+            beam_size=beam_size,
+            expand_beam=expand_beam,
+            state_beam=state_beam,
+            blank_id=self.tokenizer.blank_id,
+        )
 
     def collect_outputs(
             self,
@@ -79,53 +88,27 @@ class OpenspeechTransducerModel(OpenspeechModel):
             input_lengths: torch.IntTensor,
             targets: torch.IntTensor,
             target_lengths: torch.IntTensor,
-            predictions: torch.Tensor = None,
     ) -> OrderedDict:
-        if predictions is None:
-            predictions = logits.max(-1)[1]
-            loss = self.criterion(
-                logits=logits,
-                targets=targets[:, 1:].contiguous().int(),
-                input_lengths=input_lengths.int(),
-                target_lengths=target_lengths.int(),
-            )
+        predictions = logits.max(-1)[1]
 
-            wer = self.wer_metric(targets[:, 1:], predictions)
-            cer = self.cer_metric(targets[:, 1:], predictions)
+        loss = self.criterion(
+            logits=logits,
+            targets=targets[:, 1:].contiguous().int(),
+            input_lengths=input_lengths.int(),
+            target_lengths=target_lengths.int(),
+        )
 
-            self.info({
-                f"{stage}_loss": loss,
-                f"{stage}_wer": wer,
-                f"{stage}_cer": cer,
-                "learning_rate": self.get_lr(),
-            })
+        self.info({
+            f"{stage}_loss": loss,
+            "learning_rate": self.get_lr(),
+        })
 
-            return OrderedDict({
-                "loss": loss,
-                "wer": wer,
-                "cer": cer,
-                "predictions": predictions,
-                "targets": targets,
-                "logits": logits,
-            })
-
-        else:
-            wer = self.wer_metric(targets[:, 1:], predictions)
-            cer = self.cer_metric(targets[:, 1:], predictions)
-
-            self.info({
-                f"{stage}_wer": wer,
-                f"{stage}_cer": cer,
-            })
-
-            return OrderedDict({
-                "loss": None,
-                "wer": wer,
-                "cer": cer,
-                "predictions": predictions,
-                "targets": targets,
-                "logits": logits,
-            })
+        return OrderedDict({
+            "loss": loss,
+            "predictions": predictions,
+            "targets": targets,
+            "logits": logits,
+        })
 
     def _expand_for_joint(self, encoder_outputs: Tensor, decoder_outputs: Tensor) -> Tuple[Tensor, Tensor]:
         input_length = encoder_outputs.size(1)
@@ -143,13 +126,11 @@ class OpenspeechTransducerModel(OpenspeechModel):
         Joint `encoder_outputs` and `decoder_outputs`.
 
         Args:
-            encoder_outputs (torch.FloatTensor): A output sequence of encoders. `FloatTensor` of size
-                ``(batch, seq_length, dimension)``
-            decoder_outputs (torch.FloatTensor): A output sequence of decoders. `FloatTensor` of size
-                ``(batch, seq_length, dimension)``
+            encoder_outputs (torch.FloatTensor): A output sequence of encoders. `FloatTensor` of size ``(batch, seq_length, dimension)``
+            decoder_outputs (torch.FloatTensor): A output sequence of decoders. `FloatTensor` of size ``(batch, seq_length, dimension)``
 
         Returns:
-            * outputs (torch.FloatTensor): outputs of joint `encoder_outputs` and `decoder_outputs`..
+            outputs (torch.FloatTensor): outputs of joint `encoder_outputs` and `decoder_outputs`..
         """
         if encoder_outputs.dim() == 3 and decoder_outputs.dim() == 3:
             encoder_outputs, decoder_outputs = self._expand_for_joint(encoder_outputs, decoder_outputs)
@@ -161,69 +142,65 @@ class OpenspeechTransducerModel(OpenspeechModel):
 
         return outputs
 
-    def decode(self, encoder_output: Tensor, max_length: int) -> Tensor:
+    def greedy_decode(self, encoder_outputs: Tensor, max_length: int) -> Tensor:
         r"""
         Decode `encoder_outputs`.
 
         Args:
-            encoder_output (torch.FloatTensor): A output sequence of encoders. `FloatTensor` of size
-                ``(seq_length, dimension)``
+            encoder_outputs (torch.FloatTensor): A output sequence of encoders. `FloatTensor` of size
+                ``(batch, seq_length, dimension)``
             max_length (int): max decoding time step
 
         Returns:
             * logits (torch.FloatTensor): Log probability of model predictions.
         """
-        pred_tokens = list()
-        decoder_input = encoder_output.new_zeros(1, 1).fill_(self.decoder.sos_id).long()
-        decoder_output, hidden_state = self.decoder(decoder_input)
+        outputs = list()
 
-        for t in range(max_length):
-            step_output = self.joint(encoder_output[t].view(-1), decoder_output.view(-1))
+        for encoder_output in encoder_outputs:
+            pred_tokens = list()
+            decoder_input = encoder_output.new_zeros(1, 1).fill_(self.decoder.sos_id).long()
+            decoder_output, hidden_state = self.decoder(decoder_input)
 
-            pred_token = step_output.argmax(dim=0)
-            pred_token = int(pred_token.item())
-            pred_tokens.append(pred_token)
+            for t in range(max_length):
+                step_output = self.joint(encoder_output[t].view(-1), decoder_output.view(-1))
 
-            decoder_input = torch.LongTensor([[pred_token]])
-            if torch.cuda.is_available():
-                decoder_input = decoder_input.cuda()
+                pred_token = step_output.argmax(dim=0)
+                pred_token = int(pred_token.item())
+                pred_tokens.append(pred_token)
 
-            decoder_output, hidden_state = self.decoder(
-                decoder_input, hidden_states=hidden_state
-            )
+                decoder_input = torch.LongTensor([[pred_token]])
+                if torch.cuda.is_available():
+                    decoder_input = decoder_input.cuda()
 
-        return torch.LongTensor(pred_tokens)
+                decoder_output, hidden_state = self.decoder(
+                    decoder_input, hidden_states=hidden_state
+                )
+
+            outputs.append(torch.LongTensor(pred_tokens))
+
+        return torch.stack(outputs, dim=0)
 
     def forward(self, inputs: Tensor, input_lengths: Tensor) -> Dict[str, Tensor]:
         r"""
         Decode `encoder_outputs`.
 
         Args:
-            inputs (torch.FloatTensor): A input sequence passed to encoders. Typically for inputs this will be a padded
-                `FloatTensor` of size ``(batch, seq_length, dimension)``.
+            inputs (torch.FloatTensor): A input sequence passed to encoders. Typically for inputs this will be a padded `FloatTensor` of size ``(batch, seq_length, dimension)``.
             input_lengths (torch.LongTensor): The length of input tensor. ``(batch)``
 
         Returns:
-            * dict (dict): Result of model predictions that contains `predictions`, `logits`,
+            dict (dict): Result of model predictions that contains `predictions`,
                 `encoder_outputs`, `encoder_output_lengths`
         """
-        outputs = list()
-
-        if get_class_name(self.encoder) == "TransducerEncoderBase":
-            encoder_outputs, output_lengths = self.encoder(inputs, input_lengths)
-        else:
+        if get_class_name(self.encoder) in ["ConformerEncoder", "ContextNetEncoder"]:
             encoder_outputs, _, output_lengths = self.encoder(inputs, input_lengths)
+        else:
+            encoder_outputs, output_lengths = self.encoder(inputs, input_lengths)
         max_length = encoder_outputs.size(1)
 
-        for encoder_output in encoder_outputs:
-            decoded_seq = self.decode(encoder_output, max_length)
-            outputs.append(decoded_seq)
-
-        logits = torch.stack(outputs, dim=1).transpose(0, 1)
-        predictions = logits.max(-1)[1]
+        predictions = self.decode(encoder_outputs, max_length)
         return {
             "predictions": predictions,
-            "logits": logits,
             "encoder_outputs": encoder_outputs,
             "encoder_output_lengths": output_lengths,
         }
@@ -241,10 +218,10 @@ class OpenspeechTransducerModel(OpenspeechModel):
         """
         inputs, targets, input_lengths, target_lengths = batch
 
-        if get_class_name(self.encoder) == "TransducerEncoderBase":
-            encoder_outputs, output_lengths = self.encoder(inputs, input_lengths)
-        else:
+        if get_class_name(self.encoder) in ["ConformerEncoder", "ContextNetEncoder"]:
             encoder_outputs, _, output_lengths = self.encoder(inputs, input_lengths)
+        else:
+            encoder_outputs, output_lengths = self.encoder(inputs, input_lengths)
 
         decoder_outputs, _ = self.decoder(targets, target_lengths)
         logits = self.joint(encoder_outputs, decoder_outputs)
@@ -268,29 +245,22 @@ class OpenspeechTransducerModel(OpenspeechModel):
         Returns:
             loss (torch.Tensor): loss for training
         """
-        predictions = list()
         inputs, targets, input_lengths, target_lengths = batch
 
-        if get_class_name(self.encoder) == "TransducerEncoderBase":
-            encoder_outputs, output_lengths = self.encoder(inputs, input_lengths)
-        else:
+        if get_class_name(self.encoder) in ["ConformerEncoder", "ContextNetEncoder"]:
             encoder_outputs, _, output_lengths = self.encoder(inputs, input_lengths)
+        else:
+            encoder_outputs, output_lengths = self.encoder(inputs, input_lengths)
 
-        max_length = encoder_outputs.size(1)
-
-        for idx, encoder_output in enumerate(encoder_outputs):
-            prediction = self.decode(encoder_output, max_length)
-            predictions.append(prediction)
-
-        predictions = torch.stack(predictions)
+        decoder_outputs, _ = self.decoder(targets, target_lengths)
+        logits = self.joint(encoder_outputs, decoder_outputs)
 
         return self.collect_outputs(
             'val',
-            logits=None,
+            logits=logits,
             input_lengths=output_lengths,
             targets=targets,
             target_lengths=target_lengths,
-            predictions=predictions,
         )
 
     def test_step(self, batch: tuple, batch_idx: int) -> OrderedDict:
@@ -304,27 +274,20 @@ class OpenspeechTransducerModel(OpenspeechModel):
         Returns:
             loss (torch.Tensor): loss for training
         """
-        predictions = list()
         inputs, targets, input_lengths, target_lengths = batch
 
-        if get_class_name(self.encoder) == "TransducerEncoderBase":
-            encoder_outputs, output_lengths = self.encoder(inputs, input_lengths)
-        else:
+        if get_class_name(self.encoder) in ["ConformerEncoder", "ContextNetEncoder"]:
             encoder_outputs, _, output_lengths = self.encoder(inputs, input_lengths)
+        else:
+            encoder_outputs, output_lengths = self.encoder(inputs, input_lengths)
 
-        max_length = encoder_outputs.size(1)
-
-        for idx, encoder_output in enumerate(encoder_outputs):
-            prediction = self.decode(encoder_output, max_length)
-            predictions.append(prediction)
-
-        predictions = torch.stack(predictions)
+        decoder_outputs, _ = self.decoder(targets, target_lengths)
+        logits = self.joint(encoder_outputs, decoder_outputs)
 
         return self.collect_outputs(
             'test',
-            logits=None,
+            logits=logits,
             input_lengths=output_lengths,
             targets=targets,
             target_lengths=target_lengths,
-            predictions=predictions,
         )

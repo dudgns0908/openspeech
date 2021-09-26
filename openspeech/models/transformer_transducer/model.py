@@ -29,8 +29,9 @@ from collections import OrderedDict
 from openspeech.models import register_model, OpenspeechTransducerModel
 from openspeech.decoders import TransformerTransducerDecoder
 from openspeech.encoders import TransformerTransducerEncoder
+from openspeech.search import BeamSearchTransformerTransducer
 from openspeech.models.transformer_transducer.configurations import TransformerTransducerConfigs
-from openspeech.vocabs.vocab import Vocabulary
+from openspeech.tokenizers.tokenizer import Tokenizer
 
 
 @register_model('transformer_transducer', dataclass=TransformerTransducerConfigs)
@@ -43,19 +44,18 @@ class TransformerTransducerModel(OpenspeechTransducerModel):
 
     Args:
         configs (DictConfig): configuraion set
-        vocab (Vocabulary): vocab of training data
+        tokenizer (Tokenizer): tokenizer is in charge of preparing the inputs for a model.
 
     Inputs:
-        inputs (torch.FloatTensor): A input sequence passed to encoders. Typically for inputs this will be a padded
-            `FloatTensor` of size ``(batch, seq_length, dimension)``.
+        inputs (torch.FloatTensor): A input sequence passed to encoders. Typically for inputs this will be a padded `FloatTensor` of size ``(batch, seq_length, dimension)``.
         input_lengths (torch.LongTensor): The length of input tensor. ``(batch)``
 
     Returns:
-        * y_hats (torch.FloatTensor): Result of model predictions.
+        outputs (dict): Result of model predictions.
     """
 
-    def __init__(self, configs: DictConfig, vocab: Vocabulary, ) -> None:
-        super(TransformerTransducerModel, self).__init__(configs, vocab)
+    def __init__(self, configs: DictConfig, tokenizer: Tokenizer) -> None:
+        super(TransformerTransducerModel, self).__init__(configs, tokenizer)
 
     def build_model(self):
         self.encoder = TransformerTransducerEncoder(
@@ -75,22 +75,32 @@ class TransformerTransducerModel(OpenspeechTransducerModel):
             num_heads=self.configs.model.num_attention_heads,
             dropout=self.configs.model.label_dropout_p,
             max_positional_length=self.configs.model.max_positional_length,
-            pad_id=self.vocab.pad_id,
-            sos_id=self.vocab.sos_id,
-            eos_id=self.vocab.eos_id,
+            pad_id=self.tokenizer.pad_id,
+            sos_id=self.tokenizer.sos_id,
+            eos_id=self.tokenizer.eos_id,
         )
 
-    def decode(self, encoder_outputs: Tensor, max_length: int) -> Tensor:
+    def set_beam_decode(self, beam_size: int = 3, expand_beam: float = 2.3, state_beam: float = 4.6):
+        """ Setting beam search decode """
+        self.decode = BeamSearchTransformerTransducer(
+            joint=self.joint,
+            decoder=self.decoder,
+            beam_size=beam_size,
+            expand_beam=expand_beam,
+            state_beam=state_beam,
+            blank_id=self.tokenizer.blank_id,
+        )
+
+    def greedy_decode(self, encoder_outputs: Tensor, max_length: int) -> Tensor:
         r"""
         Decode `encoder_outputs`.
 
         Args:
-            encoder_outputs (torch.FloatTensor): A output sequence of encoders. `FloatTensor` of size
-                ``(seq_length, dimension)``
+            encoder_outputs (torch.FloatTensor): A output sequence of encoders. `FloatTensor` of size ``(seq_length, dimension)``
             max_length (int): max decoding time step
 
         Returns:
-            * y_hats (torch.IntTensor): model's predictions.
+            y_hats (torch.IntTensor): model's predictions.
         """
         batch = encoder_outputs.size(0)
         pred_tokens = list()
@@ -108,91 +118,3 @@ class TransformerTransducerModel(OpenspeechTransducerModel):
         pred_tokens = torch.stack(pred_tokens, dim=1)
 
         return torch.LongTensor(pred_tokens)
-
-    def forward(self, inputs: Tensor, input_lengths: Tensor) -> Dict[str, Tensor]:
-        r"""
-        Decode `encoder_outputs`.
-
-        Args:
-            inputs (torch.FloatTensor): A input sequence passed to encoders. Typically for inputs this will be a padded
-                `FloatTensor` of size ``(batch, seq_length, dimension)``.
-            input_lengths (torch.LongTensor): The length of input tensor. ``(batch)``
-
-        Returns:
-            * outputs (dict): Result of model predictions.
-        """
-        encoder_outputs, _ = self.encoder(inputs, input_lengths)
-        max_length = encoder_outputs.size(1)
-
-        predictions = self.decode(encoder_outputs, max_length)
-        return {
-            "predictions": predictions,
-            "encoder_outputs": encoder_outputs,
-        }
-
-    def training_step(self, batch: tuple, batch_idx: int) -> OrderedDict:
-        r"""
-        Forward propagate a `inputs` and `targets` pair for training.
-
-        Inputs:
-            batch (tuple): A train batch contains `inputs`, `targets`, `input_lengths`, `target_lengths`
-            batch_idx (int): The index of batch
-
-        Returns:
-            loss (torch.Tensor): loss for training
-        """
-        return super(TransformerTransducerModel, self).training_step(batch, batch_idx)
-
-    def validation_step(self, batch: tuple, batch_idx: int) -> OrderedDict:
-        r"""
-        Forward propagate a `inputs` and `targets` pair for validation.
-
-        Inputs:
-            batch (tuple): A train batch contains `inputs`, `targets`, `input_lengths`, `target_lengths`
-            batch_idx (int): The index of batch
-
-        Returns:
-            loss (torch.Tensor): loss for training
-        """
-        inputs, targets, input_lengths, target_lengths = batch
-
-        encoder_outputs, _ = self.encoder(inputs, input_lengths)
-        max_length = encoder_outputs.size(1)
-
-        predictions = self.decode(encoder_outputs, max_length)
-
-        return self.collect_outputs(
-            'valid',
-            logits=None,
-            input_lengths=input_lengths,
-            targets=targets,
-            target_lengths=target_lengths,
-            predictions=predictions,
-        )
-
-    def test_step(self, batch: tuple, batch_idx: int) -> OrderedDict:
-        r"""
-        Forward propagate a `inputs` and `targets` pair for test.
-
-        Inputs:
-            batch (tuple): A train batch contains `inputs`, `targets`, `input_lengths`, `target_lengths`
-            batch_idx (int): The index of batch
-
-        Returns:
-            loss (torch.Tensor): loss for training
-        """
-        inputs, targets, input_lengths, target_lengths = batch
-
-        encoder_outputs, _ = self.encoder(inputs, input_lengths)
-        max_length = encoder_outputs.size(1)
-
-        predictions = self.decode(encoder_outputs, max_length)
-
-        return self.collect_outputs(
-            'valid',
-            logits=None,
-            input_lengths=input_lengths,
-            targets=targets,
-            target_lengths=target_lengths,
-            predictions=predictions,
-        )

@@ -202,9 +202,73 @@ class BaseTrainerConfigs(OpenspeechDataclass):
     max_epochs: int = field(
         default=20, metadata={"help": "Stop training once this number of epochs is reached."}
     )
+    save_checkpoint_n_steps: int = field(
+        default=10000, metadata={"help": "Save a checkpoint every N steps."}
+    )
     auto_scale_batch_size: str = field(
         default="binsearch", metadata={"help": "If set to True, will initially run a batch size finder trying to find "
                                                "the largest batch size that fits into memory."}
+    )
+    sampler: str = field(
+        default="smart", metadata={"help": "smart: batching with similar sequence length."
+                                           "else: random batch"}
+    )
+
+
+@dataclass
+class CPUResumeTrainerConfigs(BaseTrainerConfigs):
+    name: str = field(
+        default="cpu-resume", metadata={"help": "Trainer name"}
+    )
+    checkpoint_path: str = field(
+        default=MISSING, metadata={"help": "Path of model checkpoint."}
+    )
+    device: str = field(
+        default="cpu", metadata={"help": "Training device."}
+    )
+    use_cuda: bool = field(
+        default=False, metadata={"help": "If set True, will train with GPU"}
+    )
+
+
+@dataclass
+class GPUResumeTrainerConfigs(BaseTrainerConfigs):
+    name: str = field(
+        default="gpu-resume", metadata={"help": "Trainer name"}
+    )
+    checkpoint_path: str = field(
+        default=MISSING, metadata={"help": "Path of model checkpoint."}
+    )
+    device: str = field(
+        default="gpu", metadata={"help": "Training device."}
+    )
+    use_cuda: bool = field(
+        default=True, metadata={"help": "If set True, will train with GPU"}
+    )
+    auto_select_gpus: bool = field(
+        default=True, metadata={"help": "If enabled and gpus is an integer, pick available gpus automatically."}
+    )
+
+
+@dataclass
+class TPUResumeTrainerConfigs(BaseTrainerConfigs):
+    name: str = field(
+        default="tpu-resume", metadata={"help": "Trainer name"}
+    )
+    checkpoint_path: str = field(
+        default=MISSING, metadata={"help": "Path of model checkpoint."}
+    )
+    device: str = field(
+        default="tpu", metadata={"help": "Training device."}
+    )
+    use_cuda: bool = field(
+        default=False, metadata={"help": "If set True, will train with GPU"}
+    )
+    use_tpu: bool = field(
+        default=True, metadata={"help": "If set True, will train with GPU"}
+    )
+    tpu_cores: int = field(
+        default=8, metadata={"help": "Number of TPU cores"}
     )
 
 
@@ -308,8 +372,8 @@ class LearningRateSchedulerConfigs(OpenspeechDataclass):
 
 
 @dataclass
-class VocabularyConfigs(OpenspeechDataclass):
-    """ Super class of vocabulary dataclass """
+class TokenizerConfigs(OpenspeechDataclass):
+    """ Super class of tokenizer dataclass """
     sos_token: str = field(
         default="<sos>", metadata={"help": "Start of sentence token"}
     )
@@ -384,25 +448,26 @@ class EnsembleEvaluationConfigs(OpenspeechDataclass):
 
 
 def generate_openspeech_configs_with_help():
-    from openspeech.dataclass import OPENSPEECH_TRAIN_CONFIGS, TRAINER_DATACLASS_REGISTRY
+    from openspeech.dataclass import OPENSPEECH_TRAIN_CONFIGS, TRAINER_DATACLASS_REGISTRY, AUGMENT_DATACLASS_REGISTRY, \
+        DATASET_DATACLASS_REGISTRY
     from openspeech.models import MODEL_DATACLASS_REGISTRY
     from openspeech.criterion import CRITERION_DATACLASS_REGISTRY
     from openspeech.data import AUDIO_FEATURE_TRANSFORM_DATACLASS_REGISTRY
     from openspeech.optim.scheduler import SCHEDULER_DATACLASS_REGISTRY
-    from openspeech.vocabs import VOCAB_DATACLASS_REGISTRY
-    from openspeech.datasets import DATA_MODULE_REGISTRY
+    from openspeech.tokenizers import TOKENIZER_DATACLASS_REGISTRY
 
     registries = {
         "audio": AUDIO_FEATURE_TRANSFORM_DATACLASS_REGISTRY,
+        "augment": AUGMENT_DATACLASS_REGISTRY,
         "trainer": TRAINER_DATACLASS_REGISTRY,
         "model": MODEL_DATACLASS_REGISTRY,
         "criterion": CRITERION_DATACLASS_REGISTRY,
-        "dataset": DATA_MODULE_REGISTRY,
+        "dataset": DATASET_DATACLASS_REGISTRY,
         "lr_scheduler": SCHEDULER_DATACLASS_REGISTRY,
-        "vocab": VOCAB_DATACLASS_REGISTRY,
+        "tokenizer": TOKENIZER_DATACLASS_REGISTRY,
     }
 
-    with open("../../../configuration.md", "w") as f:
+    with open("configuration.md", "w") as f:
         for group in OPENSPEECH_TRAIN_CONFIGS:
             dataclass_registry = registries[group]
 

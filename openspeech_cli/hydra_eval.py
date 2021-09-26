@@ -29,7 +29,7 @@ from openspeech.metrics import WordErrorRate, CharacterErrorRate
 from pytorch_lightning.utilities import rank_zero_info
 
 from openspeech.data.audio.dataset import SpeechToTextDataset
-from openspeech.data.sampler import BucketingSampler
+from openspeech.data.sampler import RandomSampler
 from openspeech.data.audio.data_loader import load_dataset, AudioDataLoader
 from openspeech.dataclass.initialize import hydra_eval_init
 from openspeech.models import MODEL_REGISTRY
@@ -49,28 +49,25 @@ def hydra_main(configs: DictConfig) -> None:
     if configs.eval.beam_size > 1:
         model.set_beam_decoder(beam_size=configs.eval.beam_size)
 
-    vocab = model.vocab
+    tokenizer = model.tokenizer
 
     dataset = SpeechToTextDataset(
         configs=configs,
         dataset_path=configs.eval.dataset_path,
         audio_paths=audio_paths,
         transcripts=transcripts,
-        sos_id=vocab.sos_id,
-        eos_id=vocab.eos_id,
+        sos_id=tokenizer.sos_id,
+        eos_id=tokenizer.eos_id,
     )
-    sampler = BucketingSampler(
-        data_source=dataset,
-        batch_size=configs.eval.batch_size
-    )
+    sampler = RandomSampler(data_source=dataset, batch_size=configs.eval.batch_size)
     data_loader = AudioDataLoader(
         dataset=dataset,
         num_workers=configs.eval.num_workers,
         batch_sampler=sampler,
     )
 
-    wer_metric = WordErrorRate(vocab)
-    cer_metric = CharacterErrorRate(vocab)
+    wer_metric = WordErrorRate(tokenizer)
+    cer_metric = CharacterErrorRate(tokenizer)
 
     for i, (batch) in enumerate(data_loader):
         inputs, targets, input_lengths, target_lengths = batch

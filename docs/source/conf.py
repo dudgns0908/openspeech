@@ -12,6 +12,7 @@
 #
 import os
 import sys
+sys.path.insert(0, os.path.abspath('../..'))
 sys.path.append(os.path.abspath('.'))
 sys.path.append(os.path.abspath('..'))
 import sphinx_rtd_theme
@@ -24,7 +25,7 @@ copyright = '2021, Kim, Soohwan and Ha, Sangchun and Cho, Soyoung'
 author = 'Kim, Soohwan and Ha, Sangchun and Cho, Soyoung'
 
 # The full version, including alpha/beta/rc tags
-release = 'v0.1'
+release = 'v0.3.0'
 
 
 # -- General configuration ---------------------------------------------------
